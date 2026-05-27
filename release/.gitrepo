@@ -6,7 +6,7 @@
 [subrepo]
 	remote = https://github.com/mitmedialab/semantic_arc_line_vectorization_suede
 	branch = release
-	commit = 84ffe90df13d5e3c1b72c38b6c93f6b3df520880
-	parent = 8de07fd2a5a513d583cfbf3dbe0062a682e9790a
+	commit = a8f932e53360e076cf636ce8a8eb085fada69e55
+	parent = 561fd51612176050d9e6b5268cc8a12beadc2696
 	method = merge
 	cmdver = 0.4.9
