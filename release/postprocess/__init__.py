@@ -22,6 +22,8 @@ from .control import (
     ControlRevert,
     ControlReturn,
 )
+from .diagnose import Diagnose, DiagnoseReturn, Issue
+from .edit import Edit, EditReturn, EditSpec
 from .evaluate import Evaluate, EvaluateReturn
 from .harness import Audience, Delivered, Session, route_for_audience
 from .inspect import (
@@ -81,6 +83,14 @@ __all__ = [
     # evaluate tool
     "Evaluate",
     "EvaluateReturn",
+    # diagnose tool
+    "Diagnose",
+    "DiagnoseReturn",
+    "Issue",
+    # edit tool
+    "Edit",
+    "EditReturn",
+    "EditSpec",
     # revisions / regions
     "Revision",
     "RevisionStore",

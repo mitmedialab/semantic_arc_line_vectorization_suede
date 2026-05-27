@@ -75,7 +75,12 @@ def rect_region_from_mask(mask: np.ndarray) -> Region:
         return Region(kind="rect", rect=(0.0, 0.0, 0.0, 0.0))
     return Region(
         kind="rect",
-        rect=(float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)),
+        rect=(
+            float(xs.min()),
+            float(ys.min()),
+            float(xs.max() + 1),
+            float(ys.max() + 1),
+        ),
     )
 
 

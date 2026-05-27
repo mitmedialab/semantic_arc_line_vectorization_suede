@@ -98,6 +98,10 @@ class Revision:
     edit_history: list[str] = field(default_factory=list)
     """The ``note`` from each edit that produced this revision, oldest first."""
 
+    semantic_roles: dict[PrimitiveId, str] = field(default_factory=dict)
+    """Optional ``SemanticRole`` per primitive (set by LabelSemanticRoleEdit /
+    semantic diagnosis); carried forward across edits."""
+
     # -- lazily-computed caches (excluded from identity and repr) --
 
     _pid_index: dict[PrimitiveId, int] = field(

@@ -106,4 +106,40 @@ def coverage_masks(
     )
 
 
-__all__ = ["coverage", "rasterize_centerline", "coverage_masks", "CoverageMasks"]
+def report_metrics(revision: Revision, names: Sequence[str]) -> dict[str, float]:
+    """Compute the requested scalar metrics for a revision's optimized stream.
+
+    Shared by Evaluate and Edit. Pixel metrics are computed once if any are
+    requested. (``draw_time`` uses the firmware model at 1 px/inch.)
+    """
+    from . import firmware  # local import avoids a module-load cycle
+
+    commands = revision.stream("optimized").commands
+    need_coverage = {"precision", "recall", "f1", "chamfer"} & set(names)
+    cov = coverage(revision, commands) if need_coverage else {}
+    out: dict[str, float] = {}
+    for name in names:
+        if name == "draw_time":
+            out[name] = firmware.total_time(commands)
+        elif name == "primitive_count":
+            out[name] = float(len(revision.primitive_ids))
+        elif name == "pen_up_count":
+            out[name] = float(firmware.pen_up_count(commands))
+        elif name == "precision":
+            out[name] = cov["precision"]
+        elif name == "recall":
+            out[name] = cov["recall"]
+        elif name == "f1":
+            out[name] = cov["f1"]
+        elif name == "chamfer":
+            out[name] = cov["chamfer_px"]
+    return out
+
+
+__all__ = [
+    "coverage",
+    "rasterize_centerline",
+    "coverage_masks",
+    "CoverageMasks",
+    "report_metrics",
+]

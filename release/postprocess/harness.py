@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 from .control import Control, handle_control
+from .diagnose import Diagnose, handle_diagnose
+from .edit import Edit, handle_edit
 from .evaluate import Evaluate, handle_evaluate
 from .inspect import Inspect, handle_inspect
 from .pipeline_io import revision_from_image
@@ -100,9 +102,12 @@ class Session:
             return handle_inspect(request, self)
         if isinstance(request, Evaluate):
             return handle_evaluate(request, self)
+        if isinstance(request, Diagnose):
+            return handle_diagnose(request, self)
+        if isinstance(request, Edit):
+            return handle_edit(request, self)
         raise NotImplementedError(
-            f"No handler registered for {type(request).__name__}. "
-            "Diagnose/Edit land in Phases 4-5."
+            f"No handler registered for {type(request).__name__}."
         )
 
 
