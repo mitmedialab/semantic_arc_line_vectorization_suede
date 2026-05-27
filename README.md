@@ -631,6 +631,471 @@ class SimulateEditReturn(ToolReturn):
 
 ---
 
+Yes, continuing — Section 5 onwards:
+
 ## 5. Mutation (state-changing edits)
 
-Each mutation tool returns a new `RevisionId` so the intelligence can branch and revert. Every tool here has a `dry_run: bool` field that sim
+Every mutation tool here:
+- returns a new `RevisionId` so revisions are durable and revertable,
+- accepts `dry_run: bool` (delegating to `SimulateEdit` semantics) so the same schema works either way,
+- accepts an optional `note: str` for audit trail.
+
+### `MergePrimitives`
+
+```python
+class MergePrimitives(BaseModel):
+    primitive_ids: list[str]
+    target_kind: Literal["line", "arc", "circle", "auto"] = "auto"
+    fit_tolerance_px: Optional[float] = None
+    dry_run: bool = False
+    note: Optional[str] = None
+
+class MergePrimitivesReturn(ToolReturn):
+    revision_id: Optional[str]
+    new_primitive_id: Optional[str]
+    removed_primitive_ids: list[str]
+    fit_rms_px: float
+    rejected_reason: Optional[str] = None
+```
+
+### `SplitPrimitive`
+
+```python
+class SplitPrimitive(BaseModel):
+    primitive_id: str
+    at: Union[
+        tuple[float, float],   # split at world point (snapped to nearest on-curve)
+        float,                 # parametric t in [0, 1]
+        Literal["auto_corner", "auto_inflection"],
+    ]
+    dry_run: bool = False
+    note: Optional[str] = None
+
+class SplitPrimitiveReturn(ToolReturn):
+    revision_id: Optional[str]
+    new_primitive_ids: list[str]
+```
+
+### `DeletePrimitive`
+
+```python
+class DeletePrimitive(BaseModel):
+    primitive_ids: list[str]
+    confirm_no_topology_break: bool = True  # refuse if it disconnects the graph
+    dry_run: bool = False
+    note: Optional[str] = None
+
+class DeletePrimitiveReturn(ToolReturn):
+    revision_id: Optional[str]
+    removed_primitive_ids: list[str]
+    coverage_loss_px: int  # source ink no longer covered after delete
+```
+
+### `ReplacePrimitive`
+Swap one primitive (or group) for an explicit new one. The intelligence supplies geometry directly.
+
+```python
+class ReplacementSpec(BaseModel):
+    type: Literal["line", "arc", "circle"]
+    p0: Optional[tuple[float, float]] = None
+    p1: Optional[tuple[float, float]] = None
+    bulge: Optional[float] = None
+    center: Optional[tuple[float, float]] = None
+    radius: Optional[float] = None
+
+class ReplacePrimitive(BaseModel):
+    primitive_ids: list[str]
+    replacement: ReplacementSpec
+    snap_to_existing_endpoints: bool = True
+    dry_run: bool = False
+    note: Optional[str] = None
+
+class ReplacePrimitiveReturn(ToolReturn):
+    revision_id: Optional[str]
+    new_primitive_id: str
+    removed_primitive_ids: list[str]
+```
+
+### `RefitPolyline`
+Re-run the fitting stage on the polyline that produced one or more primitives, with overrides. Useful when the intelligence has decided the fitter chose the wrong branch (e.g. took the single-arc shortcut when subdivision was warranted).
+
+```python
+class RefitPolyline(BaseModel):
+    primitive_ids: list[str]   # all must share a source polyline
+    force_subdivide: bool = False
+    forbid_arc_shortcut: bool = False
+    forbid_circle_shortcut: bool = False
+    mdl_lambda_scale: Optional[float] = None  # multiplier on default λ
+    extra_split_points: list[tuple[float, float]] = []
+    dry_run: bool = False
+    note: Optional[str] = None
+
+class RefitPolylineReturn(ToolReturn):
+    revision_id: Optional[str]
+    new_primitive_ids: list[str]
+    removed_primitive_ids: list[str]
+    fit_summary: list[FitReport]
+```
+
+### `SnapEndpoints`
+Force coincidence at junctions that are near-misses.
+
+```python
+class SnapEndpoints(BaseModel):
+    vertex_ids: Optional[list[str]] = None  # if None, snap all near-miss vertices
+    tolerance_px: Optional[float] = None
+    rerun_solver: bool = True
+    dry_run: bool = False
+    note: Optional[str] = None
+
+class SnapEndpointsReturn(ToolReturn):
+    revision_id: Optional[str]
+    affected_vertex_ids: list[str]
+    max_displacement_px: float
+```
+
+### `EnforceRelation`
+Make a near-relation exact. This is the targeted version of beautify.
+
+```python
+class EnforceRelation(BaseModel):
+    relation: Literal["parallel", "perpendicular", "equal_radius",
+                      "concentric", "collinear", "tangent_continuity",
+                      "mirror", "horizontal", "vertical"]
+    primitive_ids: list[str]
+    axis: Optional[Union[tuple[float, float], float]] = None  # for mirror / horizontal-vertical
+    rerun_solver: bool = True
+    dry_run: bool = False
+    note: Optional[str] = None
+
+class EnforceRelationReturn(ToolReturn):
+    revision_id: Optional[str]
+    residual_after: float
+    affected_primitive_ids: list[str]
+```
+
+### `SmoothPrimitive`
+Targeted noise-reduction: re-fit a primitive (typically wavy line → arc, or wobbly arc → smoother arc) using only its source points but with stricter regularization.
+
+```python
+class SmoothPrimitive(BaseModel):
+    primitive_id: str
+    strength: Literal["mild", "moderate", "strong"] = "moderate"
+    target_kind: Optional[Literal["line", "arc"]] = None   # None = preserve type
+    dry_run: bool = False
+    note: Optional[str] = None
+
+class SmoothPrimitiveReturn(ToolReturn):
+    revision_id: Optional[str]
+    new_primitive_id: str
+    rms_before: float
+    rms_after: float
+```
+
+### `AddPrimitive`
+Insert a primitive the fitter never produced — to cover missed ink, or to express a relationship the source implied but did not draw cleanly.
+
+```python
+class AddPrimitive(BaseModel):
+    spec: ReplacementSpec
+    insert_after_primitive_id: Optional[str] = None  # default: append; routing will resequence
+    dry_run: bool = False
+    note: Optional[str] = None
+
+class AddPrimitiveReturn(ToolReturn):
+    revision_id: Optional[str]
+    new_primitive_id: str
+```
+
+### `ReverseDirection`
+Flip a single primitive's draw direction (cheap, but can dramatically reduce a bordering spin).
+
+```python
+class ReverseDirection(BaseModel):
+    primitive_ids: list[str]
+    dry_run: bool = False
+    note: Optional[str] = None
+
+class ReverseDirectionReturn(ToolReturn):
+    revision_id: Optional[str]
+    draw_time_delta_ms: float
+```
+
+### `ReorderTour`
+Manual tour edit. Either supply a full permutation, or anchor a few primitives at fixed positions and let the optimizer re-route around them.
+
+```python
+class ReorderTour(BaseModel):
+    full_order: Optional[list[tuple[str, Literal["forward", "reverse"]]]] = None
+    pinned_positions: Optional[list[tuple[int, str, Literal["forward", "reverse"]]]] = None
+    rerun_optimizer: bool = True
+    dry_run: bool = False
+    note: Optional[str] = None
+
+class ReorderTourReturn(ToolReturn):
+    revision_id: Optional[str]
+    draw_time_before_ms: float
+    draw_time_after_ms: float
+```
+
+### `RerunStage`
+The escape hatch: re-execute one of the existing pipeline stages with overridden config on a region or whole image. Useful when the intelligence has diagnosed that the *upstream* stage is the source of trouble.
+
+```python
+class RerunStage(BaseModel):
+    stage: Literal["skeletonize", "segment", "graph", "vectorize",
+                   "beautify", "route_optimize"]
+    region: Optional["Region"] = None  # if None, whole image
+    config_overrides: dict = {}
+    dry_run: bool = False
+    note: Optional[str] = None
+
+class RerunStageReturn(ToolReturn):
+    revision_id: Optional[str]
+    summary: str
+    affected_primitive_ids: list[str]
+```
+
+### `AnnotateRegion` / `DefineRegion`
+Not strictly mutating geometry, but lets the intelligence carve out a named region of interest it can refer to in later calls. Important for multi-turn workflows.
+
+```python
+class Region(BaseModel):
+    kind: Literal["rect", "polygon", "primitive_set", "vertex_neighborhood"]
+    rect: Optional[tuple[float, float, float, float]] = None  # x0, y0, x1, y1
+    polygon: Optional[list[tuple[float, float]]] = None
+    primitive_ids: Optional[list[str]] = None
+    vertex_id: Optional[str] = None
+    radius_px: Optional[float] = None
+
+class DefineRegion(BaseModel):
+    region: Region
+    name: str
+    note: Optional[str] = None
+
+class DefineRegionReturn(ToolReturn):
+    region_id: str
+```
+
+---
+
+## 6. Evaluation & comparison
+
+Tools that *measure* without editing. Distinct from diagnostics in that they are typically called between/after edits to confirm progress.
+
+### `EvaluateRevision`
+The objective scoreboard.
+
+```python
+class EvaluateRevision(BaseModel):
+    revision_id: Optional[str] = None  # default: current
+    metrics: list[Literal[
+        "draw_time", "primitive_count", "pen_up_count",
+        "precision", "recall", "f1", "chamfer",
+        "semantic_overall",
+    ]] = ["draw_time", "f1", "chamfer", "primitive_count", "pen_up_count"]
+
+class EvaluateRevisionReturn(ToolReturn):
+    metrics: dict[str, float]
+```
+
+### `CompareRevisions`
+Diff two revisions on every axis the system tracks.
+
+```python
+class CompareRevisions(BaseModel):
+    revision_a: str
+    revision_b: str
+    include_visual_diff: bool = True
+
+class CompareRevisionsReturn(ToolReturn):
+    # llm_text: metric delta table + per-primitive added/removed/changed
+    # human_image_png_b64: side-by-side render with delta highlighting
+    # llm_image_png_b64: included only when visual delta is non-trivial
+    metric_deltas: dict[str, float]
+    added_primitive_ids: list[str]
+    removed_primitive_ids: list[str]
+    changed_primitive_ids: list[str]
+```
+
+### `ProjectParetoPosition`
+Where on the time/fidelity curve does this revision sit, vs the baselines (`high_geometry`, `low_geometry_fitted`, `low_geometry_consolidated`, optimized)?
+
+```python
+class ProjectParetoPosition(BaseModel):
+    revision_id: Optional[str] = None
+    fidelity_axis: Literal["f1", "chamfer", "semantic_overall"] = "f1"
+
+class ProjectParetoPositionReturn(ToolReturn):
+    # llm_text: textual scatter + dominated-by list
+    # human_image_png_b64: actual scatter plot with this revision highlighted
+    dominated_by: list[str]
+    dominates: list[str]
+    on_pareto_front: bool
+```
+
+### `RobotSimulate`
+Deterministic firmware simulation of the current revision, returning per-step pose and timing. Useful for catching motion-model surprises (a 359° spin where the intelligence expected −1°).
+
+```python
+class RobotSimulate(BaseModel):
+    revision_id: Optional[str] = None
+    return_trace: bool = False  # full per-tick pose log; large
+
+class SimStep(BaseModel):
+    primitive_id: Optional[str]   # None for spin / pen-up
+    op: Literal["line", "spin", "arc", "pen_up", "pen_down"]
+    duration_ms: float
+    start_pose: tuple[float, float, float]  # x, y, heading
+    end_pose: tuple[float, float, float]
+    notes: list[str] = []  # e.g. ["spin>180° — robot took the long way"]
+
+class RobotSimulateReturn(ToolReturn):
+    # llm_text: ordered op log with timings and notes
+    # human_image_png_b64: animated trace overlay (or single-frame final)
+    total_time_ms: float
+    steps: list[SimStep]
+```
+
+### `AskOracle`
+**The escape hatch for semantic judgment**. When *both* humans and an LLM are valid invokers, this tool is how an LLM-driven session can defer to a human (or a separate vision model) on a specific question. The harness routes the question to whichever oracle is configured.
+
+```python
+class AskOracle(BaseModel):
+    question: str
+    region: Optional["Region"] = None
+    candidate_revisions: list[str] = []  # if asking "which is better?"
+    expected_answer: Literal["yes_no", "choice", "free_text", "ranking"] = "free_text"
+    timeout_seconds: Optional[int] = None
+
+class AskOracleReturn(ToolReturn):
+    # llm_text: oracle's text answer
+    # human_image_png_b64: rendered question artifact (the image shown to oracle)
+    answer: str
+    chosen_revision_id: Optional[str] = None
+    confidence: Optional[float] = None
+```
+
+This is also how you make the same tool catalog work for both audiences: an LLM session calls `AskOracle` to query a human; a human session calls `AskOracle` to query a vision model. The catalog's user-facing identity doesn't change.
+
+---
+
+## 7. History & control flow
+
+Multi-turn refinement only works if the intelligence can experiment safely. These tools make revision a first-class concept.
+
+### `ListRevisions`
+
+```python
+class ListRevisions(BaseModel):
+    include_metrics: bool = True
+
+class RevisionRecord(BaseModel):
+    revision_id: str
+    parent_revision_id: Optional[str]
+    created_by_tool: str
+    note: Optional[str]
+    timestamp: str
+    metrics: Optional[dict[str, float]] = None
+
+class ListRevisionsReturn(ToolReturn):
+    # llm_text: tree-shaped history with metric summary per node
+    # human_image_png_b64: DAG visualization
+    revisions: list[RevisionRecord]
+    current_revision_id: str
+```
+
+### `Checkout`
+Switch the working revision (so all later read-only tools target it).
+
+```python
+class Checkout(BaseModel):
+    revision_id: str
+
+class CheckoutReturn(ToolReturn):
+    previous_revision_id: str
+    current_revision_id: str
+```
+
+### `Revert`
+
+```python
+class Revert(BaseModel):
+    to_revision_id: str
+    keep_branch: bool = True  # if False, discard intervening revisions
+
+class RevertReturn(ToolReturn):
+    revision_id: str
+```
+
+### `BranchRevision`
+Explicit "I want to try two competing strategies" hook.
+
+```python
+class BranchRevision(BaseModel):
+    from_revision_id: Optional[str] = None  # default: current
+    name: Optional[str] = None
+
+class BranchRevisionReturn(ToolReturn):
+    revision_id: str
+```
+
+### `Commit`
+Marks a revision as "this is the answer" — the harness can then return its commands as the final pipeline output.
+
+```python
+class Commit(BaseModel):
+    revision_id: str
+    rationale: Optional[str] = None
+
+class CommitReturn(ToolReturn):
+    commands_count: int
+    estimated_time_ms: float
+    final_metrics: dict[str, float]
+```
+
+### `Done`
+Terminator. Distinct from `Commit` because the intelligence may decide no improvement is possible and the original output stands.
+
+```python
+class Done(BaseModel):
+    final_revision_id: str
+    summary: str
+
+class DoneReturn(ToolReturn):
+    accepted: bool
+```
+
+---
+
+## 8. Recommended call patterns (informational)
+
+A few notes on how these compose, since the schema doesn't make this obvious:
+
+1. **Diagnose-then-suggest-then-simulate-then-apply.** An LLM-driven loop should typically chain `AnalyzeCoverage` / `IdentifyExpensiveOperations` / `EvaluateSemanticFidelity` → `SuggestOptimizations` → `SimulateEdit` → mutating tool. `SimulateEdit` is the safety valve; you can encourage it by having mutating tools return a warning when the predicted post-edit metrics weren't first checked via simulate.
+
+2. **Region-first workflows.** For large drawings, an LLM context budget is far better spent on `DefineRegion` → region-scoped diagnostics than on whole-image queries. Most tools accept `in_region` for this reason.
+
+3. **Semantic-first vs geometric-first.** I'd encourage you to run `IdentifyVisualForms` and `LabelSemanticRoles` *before* any mutation, so subsequent edits can prefer-preserving primitives tagged `silhouette` or `expressive_lines` and aggressively-simplify those tagged `texture` or `decoration`. The intelligence's biggest unique contribution is exactly this prioritization — mark it explicitly in state so it survives across calls.
+
+4. **Two-tier "image to LLM"**. The `llm_image_png_b64` field should be the exception, not the rule. The four tools where it's almost always justified are `GetSourceImage`, `GetCurrentRender`, `CompareRevisions` (visual diff), and `EvaluateSemanticFidelity` (the LLM genuinely needs to "see" to reason about evocation). Everywhere else, prefer text — both for cost and for the LLM's own reasoning quality.
+
+5. **Auto-config awareness.** `RerunStage` with `config_overrides` plus `ExplainThreshold` lets the intelligence escalate from "fix this primitive" to "fix the threshold that produced this kind of primitive across the drawing" — the highest-leverage edit kind. Surface this explicitly in your tool docstrings; LLMs miss this kind of escalation otherwise.
+
+---
+
+## 9. Summary of the catalog
+
+| Category | Tool count | Purpose |
+|---|---|---|
+| Inspection | 8 | Read-only state queries |
+| Diagnostics | 6 | Locate problems and rank by severity |
+| Semantic understanding | 5 | Bridge geometry ↔ "what is this?" |
+| Suggestion | 3 | Propose edits without applying |
+| Mutation | 13 | State-changing edits, all dry-run-able |
+| Evaluation | 5 | Score / compare / simulate |
+| History | 6 | Branch, revert, commit |
+
+That's 46 tools, which is more than an LLM should typically see in one prompt — but they cluster cleanly enough that you can expose them in tiers (inspection + diagnostics + suggestion + simulate first, then unlock mutation and history once a plan is articulated). The Pydantic schemas above render straight to JSON Schema with `model_json_schema()`; the discriminated unions (especially `EditSpec` and `Region`) will benefit from explicit `Field(..., discriminator=...)` once you wire them up.
+
+Let me know if you'd like me to (a) collapse the mutation tools into a single `ApplyEdit(EditSpec)` dispatcher (cleaner schema, slightly worse LLM ergonomics), (b) flesh out the `EditSpec` discriminated union concretely, or (c) add tools specific to either the human-only or LLM-only audience that I deliberately kept dual-purpose here.
